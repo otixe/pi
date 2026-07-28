@@ -347,7 +347,25 @@ export async function generateBranchSummary(
 	// without running through agent state/events. Retried via completeSummarization
 	// so transient stream drops reuse the configured retry policy.
 	const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
-	const requestOptions: SimpleStreamOptions = { apiKey, headers, env, signal, maxTokens: 2048 };
+	// Size maxTokens proportional to reserveTokens (matching compaction.ts's main summarization
+	// budget) instead of the old fixed 2048, so thinking-by-default models have enough room for
+	// their unsolicited hidden thinking block AND the visible summary text.
+	//
+	// Deliberately NOT setting `reasoning`/`thinkingLevel` here. On the adaptive-thinking path
+	// (models where `supportsAdaptiveThinking()` is true, e.g. sonnet-5/opus-5), `maxTokens` is
+	// the TOTAL budget shared between the hidden thinking block and the visible output text --
+	// there is no separate headroom added for reasoning like on the older budget-based reasoning
+	// path (`maxTokens = min(base + thinkingBudget, modelMax)`). Explicitly requesting a
+	// `reasoning` level here competes with the visible summary for that same shared budget and
+	// can reproduce the empty-summary bug this fix addresses, even with the larger budget below.
+	// Do NOT "fix" this by threading the session's thinkingLevel through as `reasoning` -- that
+	// makes the emptiness worse, not better; see the regression test in this package's
+	// `test/suite/regressions/branch-summary-thinking-budget.test.ts`.
+	const maxTokens = Math.min(
+		Math.floor(0.8 * reserveTokens),
+		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+	);
+	const requestOptions: SimpleStreamOptions = { apiKey, headers, env, signal, maxTokens };
 	const response = await completeSummarization(model, context, requestOptions, streamFn, retry, callbacks);
 
 	// Check if aborted or errored
